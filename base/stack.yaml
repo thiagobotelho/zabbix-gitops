@@ -1,0 +1,164 @@
+# PostgreSQL em imagem preparada para UID arbitrário do OpenShift.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: zabbix-postgresql
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zabbix-postgresql
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: zabbix-postgresql}
+  template:
+    metadata:
+      labels: {app: zabbix-postgresql}
+    spec:
+      containers:
+        - name: postgresql
+          image: quay.io/sclorg/postgresql-16-c9s:latest
+          env:
+            - name: POSTGRESQL_USER
+              valueFrom: {secretKeyRef: {name: zabbix-db, key: username}}
+            - name: POSTGRESQL_PASSWORD
+              valueFrom: {secretKeyRef: {name: zabbix-db, key: password}}
+            - name: POSTGRESQL_DATABASE
+              valueFrom: {secretKeyRef: {name: zabbix-db, key: database}}
+          ports: [{name: postgres, containerPort: 5432}]
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: 500m, memory: 768Mi}
+          volumeMounts: [{name: data, mountPath: /var/lib/pgsql/data}]
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: zabbix-postgresql}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zabbix-postgresql
+spec:
+  selector: {app: zabbix-postgresql}
+  ports: [{name: postgres, port: 5432}]
+---
+# Tags 7.4 recebem correções da linha estável sem migrar para 8.x.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zabbix-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: zabbix-server}
+  template:
+    metadata:
+      labels: {app: zabbix-server}
+    spec:
+      containers:
+        - name: server
+          image: docker.io/zabbix/zabbix-server-pgsql:alpine-7.4-latest
+          env:
+            - {name: DB_SERVER_HOST, value: zabbix-postgresql}
+            - name: POSTGRES_USER
+              valueFrom: {secretKeyRef: {name: zabbix-db, key: username}}
+            - name: POSTGRES_PASSWORD
+              valueFrom: {secretKeyRef: {name: zabbix-db, key: password}}
+            - name: POSTGRES_DB
+              valueFrom: {secretKeyRef: {name: zabbix-db, key: database}}
+          ports: [{name: trapper, containerPort: 10051}]
+          readinessProbe:
+            tcpSocket: {port: trapper}
+            initialDelaySeconds: 20
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: 750m, memory: 768Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zabbix-server
+spec:
+  selector: {app: zabbix-server}
+  ports: [{name: trapper, port: 10051}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zabbix-web
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: zabbix-web}
+  template:
+    metadata:
+      labels: {app: zabbix-web}
+    spec:
+      containers:
+        - name: web
+          image: docker.io/zabbix/zabbix-web-nginx-pgsql:alpine-7.4-latest
+          env:
+            - {name: DB_SERVER_HOST, value: zabbix-postgresql}
+            - {name: ZBX_SERVER_HOST, value: zabbix-server}
+            - {name: PHP_TZ, value: America/Sao_Paulo}
+            - name: POSTGRES_USER
+              valueFrom: {secretKeyRef: {name: zabbix-db, key: username}}
+            - name: POSTGRES_PASSWORD
+              valueFrom: {secretKeyRef: {name: zabbix-db, key: password}}
+            - name: POSTGRES_DB
+              valueFrom: {secretKeyRef: {name: zabbix-db, key: database}}
+          ports: [{name: http, containerPort: 8080}]
+          readinessProbe:
+            httpGet: {path: /, port: http}
+            initialDelaySeconds: 20
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: 300m, memory: 384Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zabbix-web
+spec:
+  selector: {app: zabbix-web}
+  ports: [{name: http, port: 8080}]
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: zabbix
+spec:
+  to: {kind: Service, name: zabbix-web}
+  port: {targetPort: http}
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+---
+# Agent 2 monitora a própria stack; coleta de nós é opt-in por exigir RBAC/SCC.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zabbix-agent2
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: zabbix-agent2}
+  template:
+    metadata:
+      labels: {app: zabbix-agent2}
+    spec:
+      containers:
+        - name: agent
+          image: docker.io/zabbix/zabbix-agent2:alpine-7.4-latest
+          env:
+            - {name: ZBX_SERVER_HOST, value: zabbix-server}
+            - {name: ZBX_HOSTNAME, value: openshift-local}
+          resources:
+            requests: {cpu: 25m, memory: 64Mi}
+            limits: {cpu: 150m, memory: 192Mi}
