@@ -1,8 +1,23 @@
 # zabbix-gitops
 
 Stack Zabbix 7.4 para laboratório OpenShift Local: servidor, frontend,
-PostgreSQL 16 e Agent 2. O overlay `crc` usa réplicas únicas e recursos
-reduzidos; não é um desenho de alta disponibilidade.
+PostgreSQL 16 e Agent 2. O overlay `desenvolvimento` usa réplicas únicas e
+recursos reduzidos; não é um desenho de alta disponibilidade.
+
+
+## Arquitetura
+
+```mermaid
+flowchart LR
+    Web[Zabbix Web/API] --> Server[Zabbix Server]
+    Server --> DB[(PostgreSQL)]
+    Agent[Zabbix Agent2] --> Server
+    Grafana[Grafana datasource] --> Web
+    Keycloak[Keycloak SAML] --> Web
+```
+
+O Zabbix complementa a observabilidade com monitoramento sintético/API, hosts,
+triggers e integração com Grafana. O SSO usa SAML via Keycloak.
 
 ## Pré-requisito
 
@@ -104,11 +119,3 @@ oc apply --dry-run=client -k overlays/desenvolvimento
 O Route não fixa host; OpenShift gera o domínio por cluster. O script de
 bootstrap descobre Zabbix, Keycloak, Grafana e Argo CD por Route quando URLs não
 são informadas no `.env`. Veja `docs/AMBIENTES.md`.
-
-## Automatizações preservadas e ajustadas
-
-- `.github/workflows/validate.yml` foi preservado e ajustado para renderizar
-  todos os Kustomizations.
-- `scripts/bootstrap-zabbix.sh` foi preservado e ajustado para não depender de
-  `apps-crc.testing`/`api.crc.testing`.
-- Adicionados overlays padronizados `desenvolvimento`, `aceite` e `producao`.

@@ -19,8 +19,3 @@ Secrets obrigatórios:
 
 - `zabbix/zabbix-db`: `username`, `password`, `database`.
 - `grafana/zabbix-datasource`: `username`, `password`, criado/atualizado por `scripts/bootstrap-zabbix.sh`.
-
-Automação preservada:
-
-- `.github/workflows/validate.yml`: agora renderiza todos os Kustomizations e executa `yamllint`.
-- `scripts/bootstrap-zabbix.sh`: configura API, SAML, usuário técnico Grafana e monitores HTTP; descobre Routes quando URLs não são informadas no `.env`.
