@@ -12,7 +12,7 @@ oc -n zabbix create secret generic zabbix-db \
   --from-literal=username=zabbix \
   --from-literal=password="$(openssl rand -base64 32)" \
   --from-literal=database=zabbix
-oc apply -k overlays/crc
+oc apply -k overlays/desenvolvimento
 ```
 
 ## Bootstrap de API, SSO e integração Grafana
@@ -21,7 +21,7 @@ Após a stack subir, execute o bootstrap idempotente:
 
 ```bash
 cp .env.example .env
-# defina ZABBIX_ADMIN_PASSWORD se a senha inicial Admin/zabbix já tiver sido alterada
+# defina ZABBIX_ADMIN_PASSWORD com a senha administrativa atual do Zabbix
 scripts/bootstrap-zabbix.sh
 ```
 
@@ -67,10 +67,10 @@ ZABBIX_GRAFANA_PASSWORD="$(openssl rand -base64 36)" scripts/bootstrap-zabbix.sh
 
 O Zabbix 7.4 suporta SAML para SSO. O script configura:
 
-- IdP Entity ID: `https://keycloak-dev.apps-crc.testing/realms/observability`;
-- SSO/SLO URL: `https://keycloak-dev.apps-crc.testing/realms/observability/protocol/saml`;
+- IdP Entity ID: `${KEYCLOAK_BASE_URL}/realms/observability`;
+- SSO/SLO URL: `${KEYCLOAK_BASE_URL}/realms/observability/protocol/saml`;
 - SP Entity ID: `zabbix`;
-- ACS: `https://zabbix-zabbix.apps-crc.testing/index_sso.php?acs`.
+- ACS: `${ZABBIX_BASE_URL}/index_sso.php?acs`.
 
 O client SAML correspondente é mantido em `keycloak-gitops`.
 
@@ -78,7 +78,7 @@ O client SAML correspondente é mantido em `keycloak-gitops`.
 
 ```bash
 oc -n zabbix get pods,svc,route
-curl -k https://zabbix-zabbix.apps-crc.testing/api_jsonrpc.php
+curl -k "$(oc -n zabbix get route zabbix -o jsonpath='https://{.spec.host}')/api_jsonrpc.php"
 oc -n grafana get secret zabbix-datasource
 ```
 
@@ -91,3 +91,24 @@ Referências:
 - https://www.zabbix.com/documentation/7.4/en/manual/web_interface/frontend_sections/users/authentication/saml
 - https://www.zabbix.com/documentation/7.4/en/manual/api/reference/user/create
 - https://www.zabbix.com/documentation/7.4/en/manual/api/reference/userdirectory/create
+
+## Ambientes e validação
+
+```bash
+oc kustomize overlays/desenvolvimento >/tmp/zabbix-dev.yaml
+oc kustomize overlays/aceite >/tmp/zabbix-aceite.yaml
+oc kustomize overlays/producao >/tmp/zabbix-prod.yaml
+oc apply --dry-run=client -k overlays/desenvolvimento
+```
+
+O Route não fixa host; OpenShift gera o domínio por cluster. O script de
+bootstrap descobre Zabbix, Keycloak, Grafana e Argo CD por Route quando URLs não
+são informadas no `.env`. Veja `docs/AMBIENTES.md`.
+
+## Automatizações preservadas e ajustadas
+
+- `.github/workflows/validate.yml` foi preservado e ajustado para renderizar
+  todos os Kustomizations.
+- `scripts/bootstrap-zabbix.sh` foi preservado e ajustado para não depender de
+  `apps-crc.testing`/`api.crc.testing`.
+- Adicionados overlays padronizados `desenvolvimento`, `aceite` e `producao`.

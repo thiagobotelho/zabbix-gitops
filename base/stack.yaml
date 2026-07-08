@@ -134,7 +134,6 @@ kind: Route
 metadata:
   name: zabbix
 spec:
-  host: zabbix-zabbix.apps-crc.testing
   to: {kind: Service, name: zabbix-web}
   port: {targetPort: http}
   tls:

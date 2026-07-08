@@ -12,17 +12,22 @@ OC_BIN="${OC_BIN:-oc}"
 ZABBIX_NAMESPACE="${ZABBIX_NAMESPACE:-zabbix}"
 ZABBIX_ROUTE_NAME="${ZABBIX_ROUTE_NAME:-zabbix}"
 ZABBIX_ADMIN_USER="${ZABBIX_ADMIN_USER:-Admin}"
-ZABBIX_ADMIN_PASSWORD="${ZABBIX_ADMIN_PASSWORD:-zabbix}"
+ZABBIX_ADMIN_PASSWORD="${ZABBIX_ADMIN_PASSWORD:-}"
 GRAFANA_NAMESPACE="${GRAFANA_NAMESPACE:-grafana}"
 ZABBIX_GRAFANA_SECRET="${ZABBIX_GRAFANA_SECRET:-zabbix-datasource}"
 ZABBIX_GRAFANA_USER="${ZABBIX_GRAFANA_USER:-grafana-datasource}"
 ZABBIX_GRAFANA_PASSWORD="${ZABBIX_GRAFANA_PASSWORD:-}"
 ZABBIX_ENABLE_SAML="${ZABBIX_ENABLE_SAML:-true}"
-KEYCLOAK_BASE_URL="${KEYCLOAK_BASE_URL:-https://keycloak-dev.apps-crc.testing}"
+KEYCLOAK_NAMESPACE="${KEYCLOAK_NAMESPACE:-keycloak-dev}"
+KEYCLOAK_ROUTE_NAME="${KEYCLOAK_ROUTE_NAME:-keycloak}"
+KEYCLOAK_BASE_URL="${KEYCLOAK_BASE_URL:-}"
 KEYCLOAK_REALM="${KEYCLOAK_REALM:-observability}"
 ZABBIX_SAML_ENTITY_ID="${ZABBIX_SAML_ENTITY_ID:-zabbix}"
-ZABBIX_BASE_URL="${ZABBIX_BASE_URL:-https://zabbix-zabbix.apps-crc.testing}"
+ZABBIX_BASE_URL="${ZABBIX_BASE_URL:-}"
 ZABBIX_PROVISION_MONITORING="${ZABBIX_PROVISION_MONITORING:-true}"
+ARGOCD_NAMESPACE="${ARGOCD_NAMESPACE:-openshift-gitops}"
+ARGOCD_ROUTE_NAME="${ARGOCD_ROUTE_NAME:-openshift-gitops-server}"
+GRAFANA_ROUTE_NAME="${GRAFANA_ROUTE_NAME:-grafana-route}"
 
 require() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -37,9 +42,35 @@ require jq
 require openssl
 require base64
 
+if [[ -z "${ZABBIX_ADMIN_PASSWORD}" ]]; then
+  echo "[ERROR] Defina ZABBIX_ADMIN_PASSWORD no .env ou no ambiente antes de executar o bootstrap." >&2
+  exit 1
+fi
+
+route_url() {
+  local namespace="$1"
+  local route="$2"
+  local host
+  host="$("${OC_BIN}" -n "${namespace}" get route "${route}" -o jsonpath='{.spec.host}' 2>/dev/null || true)"
+  if [[ -n "${host}" ]]; then
+    printf 'https://%s' "${host}"
+  fi
+}
+
+if [[ -z "${KEYCLOAK_BASE_URL}" ]]; then
+  KEYCLOAK_BASE_URL="$(route_url "${KEYCLOAK_NAMESPACE}" "${KEYCLOAK_ROUTE_NAME}")"
+fi
+
+if [[ -z "${ZABBIX_BASE_URL}" ]]; then
+  ZABBIX_BASE_URL="$(route_url "${ZABBIX_NAMESPACE}" "${ZABBIX_ROUTE_NAME}")"
+fi
+
 if [[ -z "${ZABBIX_API_URL:-}" ]]; then
-  route_host="$("${OC_BIN}" -n "${ZABBIX_NAMESPACE}" get route "${ZABBIX_ROUTE_NAME}" -o jsonpath='{.spec.host}')"
-  ZABBIX_API_URL="https://${route_host}/api_jsonrpc.php"
+  if [[ -z "${ZABBIX_BASE_URL}" ]]; then
+    echo "[ERROR] Defina ZABBIX_API_URL/ZABBIX_BASE_URL ou exponha a Route ${ZABBIX_NAMESPACE}/${ZABBIX_ROUTE_NAME}." >&2
+    exit 1
+  fi
+  ZABBIX_API_URL="${ZABBIX_BASE_URL}/api_jsonrpc.php"
 fi
 
 json_escape() {
@@ -251,6 +282,22 @@ ensure_http_monitor() {
   fi
 }
 
+ensure_http_monitor_if_url() {
+  local host="$1"
+  local visible="$2"
+  local component="$3"
+  local url="$4"
+  local expected_codes="$5"
+  local host_group_id="$6"
+
+  if [[ -z "${url}" ]]; then
+    echo "[WARN] Monitor ${visible} ignorado: URL não encontrada. Defina variável no .env se necessário." >&2
+    return 0
+  fi
+
+  ensure_http_monitor "${host}" "${visible}" "${component}" "${url}" "${expected_codes}" "${host_group_id}"
+}
+
 monitor_group_id="$(ensure_host_group "OpenShift Local")"
 grafana_usrgrp_id="$(ensure_user_group_with_read_rights "Grafana datasource readers" "${monitor_group_id}")"
 grafana_role_id="$(role_id_by_name "User role")"
@@ -266,15 +313,31 @@ ensure_user "${ZABBIX_GRAFANA_USER}" "Grafana" "Datasource" "${grafana_role_id}"
   --dry-run=client -o yaml | "${OC_BIN}" apply -f - >/dev/null
 
 if [[ "${ZABBIX_ENABLE_SAML}" == "true" ]]; then
+  if [[ -z "${KEYCLOAK_BASE_URL}" ]]; then
+    echo "[ERROR] Defina KEYCLOAK_BASE_URL ou exponha a Route ${KEYCLOAK_NAMESPACE}/${KEYCLOAK_ROUTE_NAME} para habilitar SAML." >&2
+    exit 1
+  fi
   ensure_saml
 fi
 
 if [[ "${ZABBIX_PROVISION_MONITORING}" == "true" ]]; then
-  ensure_http_monitor "crc-api" "CRC API" "openshift-api" "https://api.crc.testing:6443/readyz" "200" "${monitor_group_id}"
-  ensure_http_monitor "openshift-gitops" "OpenShift GitOps" "argocd" "https://openshift-gitops-server-openshift-gitops.apps-crc.testing" "200-399" "${monitor_group_id}"
-  ensure_http_monitor "keycloak-dev" "Keycloak dev" "keycloak" "https://keycloak-dev.apps-crc.testing/realms/observability/.well-known/openid-configuration" "200" "${monitor_group_id}"
-  ensure_http_monitor "grafana" "Grafana" "grafana" "https://grafana-grafana.apps-crc.testing/api/health" "200" "${monitor_group_id}"
-  ensure_http_monitor "zabbix-web" "Zabbix Web" "zabbix" "${ZABBIX_BASE_URL}" "200-399" "${monitor_group_id}"
+  openshift_api_url="${OPENSHIFT_API_READYZ_URL:-$("${OC_BIN}" whoami --show-server 2>/dev/null || true)}"
+  if [[ -n "${openshift_api_url}" ]]; then
+    openshift_api_url="${openshift_api_url%/}/readyz"
+  fi
+
+  argocd_url="${ARGOCD_BASE_URL:-$(route_url "${ARGOCD_NAMESPACE}" "${ARGOCD_ROUTE_NAME}")}"
+  grafana_url="${GRAFANA_BASE_URL:-$(route_url "${GRAFANA_NAMESPACE}" "${GRAFANA_ROUTE_NAME}")}"
+  keycloak_wellknown_url=""
+  if [[ -n "${KEYCLOAK_BASE_URL}" ]]; then
+    keycloak_wellknown_url="${KEYCLOAK_BASE_URL}/realms/${KEYCLOAK_REALM}/.well-known/openid-configuration"
+  fi
+
+  ensure_http_monitor_if_url "openshift-api" "OpenShift API" "openshift-api" "${openshift_api_url}" "200" "${monitor_group_id}"
+  ensure_http_monitor_if_url "openshift-gitops" "OpenShift GitOps" "argocd" "${argocd_url}" "200-399" "${monitor_group_id}"
+  ensure_http_monitor_if_url "keycloak" "Keycloak" "keycloak" "${keycloak_wellknown_url}" "200" "${monitor_group_id}"
+  ensure_http_monitor_if_url "grafana" "Grafana" "grafana" "${grafana_url:+${grafana_url}/api/health}" "200" "${monitor_group_id}"
+  ensure_http_monitor_if_url "zabbix-web" "Zabbix Web" "zabbix" "${ZABBIX_BASE_URL}" "200-399" "${monitor_group_id}"
 fi
 
 echo "[OK] Zabbix API bootstrap concluído."
