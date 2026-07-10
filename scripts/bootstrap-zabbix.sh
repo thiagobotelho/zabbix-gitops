@@ -3,12 +3,51 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+load_env_file() {
+  local env_file="$1"
+  local line key value
+
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    line="${line%$'\r'}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+
+    [[ -z "${line}" || "${line}" == \#* ]] && continue
+
+    if [[ "${line}" == export[[:space:]]* ]]; then
+      line="${line#export}"
+      line="${line#"${line%%[![:space:]]*}"}"
+    fi
+
+    if [[ ! "${line}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+      echo "[WARN] Linha ignorada em ${env_file}: formato inválido para .env" >&2
+      continue
+    fi
+
+    key="${line%%=*}"
+    value="${line#*=}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+
+    if [[ "${value}" =~ ^\"(.*)\"$ ]]; then
+      value="${BASH_REMATCH[1]}"
+    elif [[ "${value}" =~ ^\'(.*)\'$ ]]; then
+      value="${BASH_REMATCH[1]}"
+    fi
+
+    export "${key}=${value}"
+  done < "${env_file}"
+}
+
 if [[ -f "${ROOT_DIR}/.env" ]]; then
-  # shellcheck disable=SC1091
-  set -a; source "${ROOT_DIR}/.env"; set +a
+  load_env_file "${ROOT_DIR}/.env"
 fi
 
 OC_BIN="${OC_BIN:-oc}"
+if ! command -v "${OC_BIN}" >/dev/null 2>&1 && [[ "${OC_BIN}" == "oc" && -x "${HOME}/.local/bin/oc" ]]; then
+  OC_BIN="${HOME}/.local/bin/oc"
+fi
 ZABBIX_NAMESPACE="${ZABBIX_NAMESPACE:-zabbix}"
 ZABBIX_ROUTE_NAME="${ZABBIX_ROUTE_NAME:-zabbix}"
 ZABBIX_ADMIN_USER="${ZABBIX_ADMIN_USER:-Admin}"
@@ -825,7 +864,20 @@ grafana_usrgrp_id="$(ensure_user_group_with_read_rights "Grafana datasource read
 grafana_role_id="$(role_id_by_name "User role")"
 disabled_usrgrp_id="$(ensure_disabled_user_group "${ZABBIX_DISABLED_USER_GROUP}")"
 
-ZABBIX_GRAFANA_PASSWORD="${ZABBIX_GRAFANA_PASSWORD:-$(existing_secret_key password)}"
+if [[ -n "${ZABBIX_GRAFANA_PASSWORD}" && "${#ZABBIX_GRAFANA_PASSWORD}" -lt 8 ]]; then
+  echo "[WARN] ZABBIX_GRAFANA_PASSWORD ignorado: o Zabbix exige no mínimo 8 caracteres." >&2
+  ZABBIX_GRAFANA_PASSWORD=""
+fi
+
+if [[ -z "${ZABBIX_GRAFANA_PASSWORD}" ]]; then
+  ZABBIX_GRAFANA_PASSWORD="$(existing_secret_key password)"
+fi
+
+if [[ -n "${ZABBIX_GRAFANA_PASSWORD}" && "${#ZABBIX_GRAFANA_PASSWORD}" -lt 8 ]]; then
+  echo "[WARN] Senha existente em ${GRAFANA_NAMESPACE}/${ZABBIX_GRAFANA_SECRET} ignorada: o Zabbix exige no mínimo 8 caracteres." >&2
+  ZABBIX_GRAFANA_PASSWORD=""
+fi
+
 ZABBIX_GRAFANA_PASSWORD="${ZABBIX_GRAFANA_PASSWORD:-$(openssl rand -base64 36 | tr -d '\n')}"
 ensure_user "${ZABBIX_GRAFANA_USER}" "Grafana" "Datasource" "${grafana_role_id}" "${grafana_usrgrp_id}" "${ZABBIX_GRAFANA_PASSWORD}"
 
