@@ -1,0 +1,83 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: zabbix-kubernetes-monitor
+  namespace: zabbix
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: zabbix-kubernetes-monitor-token
+  namespace: zabbix
+  annotations:
+    kubernetes.io/service-account.name: zabbix-kubernetes-monitor
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: zabbix-kubernetes-monitor
+rules:
+  - apiGroups: [""]
+    resources:
+      - componentstatuses
+      - configmaps
+      - endpoints
+      - events
+      - limitranges
+      - namespaces
+      - nodes
+      - persistentvolumeclaims
+      - persistentvolumes
+      - pods
+      - replicationcontrollers
+      - resourcequotas
+      - services
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources:
+      - nodes/metrics
+      - nodes/proxy
+      - nodes/stats
+      - services/proxy
+    verbs: ["get"]
+  - apiGroups: ["apps"]
+    resources:
+      - daemonsets
+      - deployments
+      - replicasets
+      - statefulsets
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources:
+      - cronjobs
+      - jobs
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources:
+      - endpointslices
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources:
+      - nodes
+      - pods
+    verbs: ["get", "list"]
+  - nonResourceURLs:
+      - /healthz
+      - /livez
+      - /metrics
+      - /readyz
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: zabbix-kubernetes-monitor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: zabbix-kubernetes-monitor
+subjects:
+  - kind: ServiceAccount
+    name: zabbix-kubernetes-monitor
+    namespace: zabbix

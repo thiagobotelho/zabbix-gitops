@@ -3,4 +3,5 @@ kind: Kustomization
 namespace: zabbix
 resources:
   - namespace.yaml
+  - kubernetes-monitor-rbac.yaml
   - stack.yaml
