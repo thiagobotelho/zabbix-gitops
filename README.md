@@ -134,10 +134,15 @@ apontaria para o próprio pod do Server; por isso checks passivos devem usar o
 Service `zabbix-agent2` na porta `10050`. O bootstrap cria/atualiza os hosts
 `openshift-local` e `Zabbix server` para essa interface DNS.
 
-O container Agent2 aceita passivos de `0.0.0.0/0` porque o IP de origem do pod
-do Server não é o ClusterIP do Service. A restrição de rede fica na
-`NetworkPolicy allow-zabbix-server-to-agent2`, permitindo ingresso somente do
-pod `app=zabbix-server`.
+O container Agent2 aceita passivos via `ZBX_PASSIVESERVERS=0.0.0.0/0` porque o
+IP de origem do pod do Server não é o ClusterIP do Service. A restrição de rede
+fica na `NetworkPolicy allow-zabbix-server-to-agent2`, permitindo ingresso
+somente do pod `app=zabbix-server`.
+
+Active checks ficam desabilitados com `ZBX_ACTIVE_ALLOW=false` no perfil CRC,
+pois a imagem oficial usa `ZBX_ACTIVESERVERS` para `ServerActive`; usar
+`0.0.0.0/0` nesse campo é inválido e faz o `zabbix-agent2` entrar em
+`CrashLoopBackOff`.
 
 ## Templates funcionais
 

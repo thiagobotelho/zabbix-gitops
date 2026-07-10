@@ -159,8 +159,9 @@ spec:
           env:
             # Em Kubernetes o tráfego passivo vem do IP do pod do Server, não
             # do ClusterIP do Service. A NetworkPolicy abaixo restringe a porta.
-            - {name: ZBX_SERVER_HOST, value: 0.0.0.0/0}
-            - {name: ZBX_SERVER_ACTIVE, value: zabbix-server}
+            - {name: ZBX_SERVER_HOST, value: zabbix-server}
+            - {name: ZBX_PASSIVESERVERS, value: 0.0.0.0/0}
+            - {name: ZBX_ACTIVE_ALLOW, value: "false"}
             - {name: ZBX_HOSTNAME, value: openshift-local}
             - {name: ZBX_LISTENPORT, value: "10050"}
           ports:
