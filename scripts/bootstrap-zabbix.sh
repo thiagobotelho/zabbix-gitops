@@ -697,12 +697,8 @@ ensure_official_kubernetes_hosts() {
     "kubernetes" \
     "${host_group_id}" \
     "${macros_json}" \
-    "${ZABBIX_KUBERNETES_NODES_TEMPLATE}" \
     "${ZABBIX_KUBERNETES_CLUSTER_TEMPLATE}" \
-    "${ZABBIX_KUBERNETES_API_TEMPLATE}" \
-    "${ZABBIX_KUBERNETES_KUBELET_TEMPLATE}" \
-    "${ZABBIX_KUBERNETES_CONTROLLER_TEMPLATE}" \
-    "${ZABBIX_KUBERNETES_SCHEDULER_TEMPLATE}"
+    "${ZABBIX_KUBERNETES_API_TEMPLATE}"
 }
 
 ensure_component_host() {

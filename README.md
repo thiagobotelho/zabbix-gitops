@@ -67,8 +67,8 @@ O script faz:
   Grafana e o próprio Zabbix;
 - cria/vincula templates HTTP funcionais para OpenShift API, Argo CD, Keycloak,
   Grafana, Zabbix Web, Prometheus Apps e Pyroscope;
-- importa/atualiza os templates oficiais Kubernetes 7.4 do Zabbix e os vincula
-  ao host único `OpenShift Local`, evitando hosts duplicados por template.
+- importa/atualiza os templates oficiais Kubernetes 7.4 do Zabbix e vincula ao
+  host `OpenShift Local` os templates de cluster/API que não conflitam entre si.
 
 ### Secrets
 
@@ -189,9 +189,11 @@ O bootstrap trabalha em duas camadas:
    bootstrap a partir da integração oficial:
    `Kubernetes nodes by HTTP`, `Kubernetes cluster state by HTTP` e
    `Kubernetes API server by HTTP`, além dos templates de kubelet,
-   controller-manager e scheduler usados por descoberta. Eles são vinculados ao
-   host único `OpenShift Local` e coletam estado do cluster, nodes e métricas da
-   API usando token de ServiceAccount, não apenas web scenarios.
+   controller-manager e scheduler usados por descoberta. O host
+   `OpenShift Local` recebe diretamente `Kubernetes cluster state by HTTP` e
+   `Kubernetes API server by HTTP`. Os demais ficam importados para descoberta
+   oficial. Isso evita conflito de LLD keys, como `kube.node.discovery`, quando
+   vários templates oficiais são anexados manualmente ao mesmo host.
 2. Templates locais criados pela API do Zabbix para endpoints críticos:
    `Template OpenShift API by HTTP`, `Template Argo CD by HTTP`,
    `Template Keycloak by HTTP`, `Template Grafana by HTTP`,
