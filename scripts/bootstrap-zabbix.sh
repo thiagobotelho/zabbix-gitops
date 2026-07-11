@@ -106,6 +106,14 @@ GRAFANA_ROUTE_NAME="${GRAFANA_ROUTE_NAME:-grafana-route}"
 PYROSCOPE_READY_URL="${PYROSCOPE_READY_URL:-http://pyroscope.pyroscope.svc:4040/ready}"
 PROMETHEUS_APPS_READY_URL="${PROMETHEUS_APPS_READY_URL:-http://apps-monitoring-prometheus.observability-apps.svc:9090/-/ready}"
 
+if [[ "${ZABBIX_AGENT_VISIBLE_NAME}" == "OpenShift Local - Zabbix Agent2" ]]; then
+  ZABBIX_AGENT_VISIBLE_NAME="OpenShift Local"
+fi
+
+if [[ "${ZABBIX_DEFAULT_AGENT_VISIBLE_NAME}" == "Zabbix Server - Agent2" ]]; then
+  ZABBIX_DEFAULT_AGENT_VISIBLE_NAME="Zabbix server"
+fi
+
 require() {
   command -v "$1" >/dev/null 2>&1 || {
     echo "[ERROR] Comando obrigatório não encontrado: $1" >&2
