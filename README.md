@@ -82,7 +82,7 @@ oc -n zabbix create secret generic zabbix-db \
   --from-literal=username=zabbix \
   --from-literal=password="${ZABBIX_DB_PASSWORD}" \
   --from-literal=database=zabbix \
-  --dry-run=client -o yaml | oc apply -f -
+  --dry-run=client -o yaml | oc apply --server-side -f -
 ```
 
 Rotação do usuário técnico do Grafana:

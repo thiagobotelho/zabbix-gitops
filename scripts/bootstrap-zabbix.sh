@@ -162,7 +162,7 @@ ensure_saml_idp_configmap() {
 
   "${OC_BIN}" -n "${ZABBIX_NAMESPACE}" create configmap "${ZABBIX_SAML_IDP_CONFIGMAP}" \
     "--from-file=${ZABBIX_SAML_IDP_CERT_KEY}=${tmp}" \
-    --dry-run=client -o yaml | "${OC_BIN}" apply -f - >/dev/null
+    --dry-run=client -o yaml | "${OC_BIN}" apply --server-side -f - >/dev/null
   rm -f "${tmp}"
 
   if [[ "${ZABBIX_RESTART_WEB_ON_IDP_CERT_CHANGE}" == "true" ]]; then
@@ -350,11 +350,13 @@ ensure_grafana_datasource_identity() {
   ZABBIX_GRAFANA_PASSWORD="${ZABBIX_GRAFANA_PASSWORD:-$(openssl rand -base64 36 | tr -d '\n')}"
   ensure_user "${ZABBIX_GRAFANA_USER}" "Grafana" "Datasource" "${grafana_role_id}" "${grafana_usrgrp_id}" "${ZABBIX_GRAFANA_PASSWORD}"
 
-  "${OC_BIN}" create namespace "${GRAFANA_NAMESPACE}" --dry-run=client -o yaml | "${OC_BIN}" apply -f - >/dev/null
+  "${OC_BIN}" create namespace "${GRAFANA_NAMESPACE}" --dry-run=client -o yaml | "${OC_BIN}" apply --server-side -f - >/dev/null
   "${OC_BIN}" -n "${GRAFANA_NAMESPACE}" create secret generic "${ZABBIX_GRAFANA_SECRET}" \
     --from-literal=username="${ZABBIX_GRAFANA_USER}" \
     --from-literal=password="${ZABBIX_GRAFANA_PASSWORD}" \
-    --dry-run=client -o yaml | "${OC_BIN}" apply -f - >/dev/null
+    --dry-run=client -o yaml | "${OC_BIN}" apply --server-side -f - >/dev/null
+  "${OC_BIN}" -n "${GRAFANA_NAMESPACE}" annotate secret "${ZABBIX_GRAFANA_SECRET}" \
+    kubectl.kubernetes.io/last-applied-configuration- >/dev/null 2>&1 || true
 }
 
 ensure_saml() {
