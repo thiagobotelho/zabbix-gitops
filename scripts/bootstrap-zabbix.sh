@@ -139,13 +139,13 @@ render_keycloak_saml_idp_cert() {
   descriptor="$(curl -ksS --fail "${KEYCLOAK_BASE_URL%/}/realms/${KEYCLOAK_REALM}/protocol/saml/descriptor")"
   cert="$(printf '%s' "${descriptor}" \
     | tr -d '\n\r\t ' \
-    | sed -n 's/.*<ds:X509Certificate>\([^<]*\)<\\/ds:X509Certificate>.*/\1/p' \
+    | sed -n 's#.*<ds:X509Certificate>\([^<]*\)</ds:X509Certificate>.*#\1#p' \
     | head -n 1)"
 
   if [[ -z "${cert}" ]]; then
     cert="$(printf '%s' "${descriptor}" \
       | tr -d '\n\r\t ' \
-      | sed -n 's/.*<X509Certificate>\([^<]*\)<\\/X509Certificate>.*/\1/p' \
+      | sed -n 's#.*<X509Certificate>\([^<]*\)</X509Certificate>.*#\1#p' \
       | head -n 1)"
   fi
 
