@@ -3,7 +3,7 @@
 Este repositório usa `base/` e `overlays/{desenvolvimento,aceite,producao}`.
 
 - `desenvolvimento`: Zabbix Server/Web/PostgreSQL/Agent2 com recursos reduzidos para CRC.
-- `aceite`: use para homologar SSO, datasource Grafana e templates antes da produção.
+- `aceite`: use para homologar SSO, datasource Grafana e integração Keycloak.
 - `producao`: recomenda-se banco externo, backup, HA, sizing e housekeeping formal.
 
 Validação:
@@ -18,28 +18,26 @@ oc apply --dry-run=client -k overlays/desenvolvimento
 Secrets obrigatórios:
 
 - `zabbix/zabbix-db`: `username`, `password`, `database`.
-- `zabbix/zabbix-kubernetes-monitor-token`: token de ServiceAccount criado por
-  `base/kubernetes-monitor-rbac.yaml` para os templates Kubernetes por HTTP.
-- `grafana/zabbix-datasource`: `username`, `password`, criado/atualizado por `scripts/bootstrap-zabbix.sh`.
+- `grafana/zabbix-datasource`: `username`, `password`, criado/atualizado por
+  `scripts/bootstrap-zabbix.sh` quando `ZABBIX_MANAGE_GRAFANA_DATASOURCE=true`.
+
+ConfigMaps:
+
+- `zabbix/zabbix-saml-idp`: chave `idp.crt`, criada/atualizada pelo bootstrap a
+  partir do metadata SAML do Keycloak.
 
 Bootstrap:
 
-- `ZABBIX_ENABLE_SAML_JIT=true` ativa JIT SAML via Keycloak.
+- `ZABBIX_ENABLE_SAML=true` habilita SAML via Keycloak.
+- `ZABBIX_ENABLE_SAML_JIT=true` ativa JIT provisioning.
+- `ZABBIX_ENABLE_SAML_SCIM=true` deixa SCIM habilitado no diretório SAML.
 - `ZABBIX_DISABLED_USER_GROUP` define o grupo desabilitado usado em
   `disabled_usrgrpid`.
-- `ZABBIX_AGENT_DNS=zabbix-agent2` e `ZABBIX_AGENT_PORT=10050` definem a
-  interface dos hosts Agent2.
-- O Service `zabbix-agent2` substitui o uso incorreto de `127.0.0.1:10050`
-  quando Server e Agent rodam em pods diferentes.
-- `ZABBIX_PROVISION_KUBERNETES_TEMPLATES=true` importa e vincula hosts aos
-  templates oficiais `Kubernetes nodes by HTTP`,
-  `Kubernetes cluster state by HTTP`, `Kubernetes API server by HTTP`,
-  `Kubernetes Kubelet by HTTP`, `Kubernetes Controller manager by HTTP` e
-  `Kubernetes Scheduler by HTTP`.
-- `ZABBIX_IMPORT_KUBERNETES_TEMPLATES=false` desativa o download/import dos YAMLs
-  oficiais e apenas reutiliza templates já existentes.
-- `ZABBIX_PROVISION_COMPONENT_TEMPLATES=true` cria templates HTTP funcionais
-  para OpenShift API, Argo CD, Keycloak, Grafana, Zabbix Web, Prometheus Apps e
-  Pyroscope.
-- `ZABBIX_KUBE_NAMESPACE_MATCHES` limita descoberta LLD no CRC. Amplie com
-  cuidado em clusters maiores.
+- `ZABBIX_MANAGE_GRAFANA_DATASOURCE=true` cria/atualiza o usuário técnico e o
+  Secret do datasource Grafana.
+- `ZABBIX_GRAFANA_READ_HOST_GROUPS` pode listar host groups já existentes,
+  separados por vírgula, para conceder leitura ao datasource.
+
+O bootstrap não cria hosts, templates, web scenarios ou macros Kubernetes.
+Monitoramento via Zabbix deve ser modelado separadamente conforme a necessidade
+do ambiente.
