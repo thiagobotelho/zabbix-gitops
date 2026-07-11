@@ -98,6 +98,11 @@ ZABBIX_KUBERNETES_KUBELET_TEMPLATE="${ZABBIX_KUBERNETES_KUBELET_TEMPLATE:-Kubern
 ZABBIX_KUBERNETES_CONTROLLER_TEMPLATE="${ZABBIX_KUBERNETES_CONTROLLER_TEMPLATE:-Kubernetes Controller manager by HTTP}"
 ZABBIX_KUBERNETES_SCHEDULER_TEMPLATE="${ZABBIX_KUBERNETES_SCHEDULER_TEMPLATE:-Kubernetes Scheduler by HTTP}"
 ZABBIX_KUBERNETES_NODES_ENDPOINT_NAME="${ZABBIX_KUBERNETES_NODES_ENDPOINT_NAME:-zabbix-agent2}"
+ZABBIX_KUBERNETES_STATE_ENDPOINT_NAME="${ZABBIX_KUBERNETES_STATE_ENDPOINT_NAME:-kube-state-metrics}"
+ZABBIX_OPENSHIFT_STATE_ENDPOINT_NAME="${ZABBIX_OPENSHIFT_STATE_ENDPOINT_NAME:-openshift-state-metrics}"
+ZABBIX_KUBERNETES_CONTROL_PLANE_TAINT="${ZABBIX_KUBERNETES_CONTROL_PLANE_TAINT:-node-role.kubernetes.io/control-plane}"
+ZABBIX_KUBELET_FILTER_LABELS="${ZABBIX_KUBELET_FILTER_LABELS:-}"
+ZABBIX_KUBELET_FILTER_ANNOTATIONS="${ZABBIX_KUBELET_FILTER_ANNOTATIONS:-}"
 ZABBIX_KUBE_NODE_MATCHES="${ZABBIX_KUBE_NODE_MATCHES:-.*}"
 ZABBIX_KUBE_NAMESPACE_MATCHES="${ZABBIX_KUBE_NAMESPACE_MATCHES:-^(default|kube-.+|openshift-.+|argocd|openshift-gitops|grafana|zabbix|keycloak.*|tempo|loki|pyroscope|observability.*)$}"
 ARGOCD_NAMESPACE="${ARGOCD_NAMESPACE:-openshift-gitops}"
@@ -679,13 +684,34 @@ ensure_official_kubernetes_hosts() {
     --arg api_metrics_url "${kube_api_url}/metrics" \
     --arg token "${kube_token}" \
     --arg endpoint_name "${ZABBIX_KUBERNETES_NODES_ENDPOINT_NAME}" \
+    --arg state_endpoint_name "${ZABBIX_KUBERNETES_STATE_ENDPOINT_NAME}" \
+    --arg openshift_state_endpoint_name "${ZABBIX_OPENSHIFT_STATE_ENDPOINT_NAME}" \
+    --arg control_plane_taint "${ZABBIX_KUBERNETES_CONTROL_PLANE_TAINT}" \
+    --arg kubelet_filter_labels "${ZABBIX_KUBELET_FILTER_LABELS}" \
+    --arg kubelet_filter_annotations "${ZABBIX_KUBELET_FILTER_ANNOTATIONS}" \
     --arg node_matches "${ZABBIX_KUBE_NODE_MATCHES}" \
     --arg namespace_matches "${ZABBIX_KUBE_NAMESPACE_MATCHES}" \
     '[
       {macro:"{$KUBE.API.URL}",value:$api_url},
       {macro:"{$KUBE.API.SERVER.URL}",value:$api_metrics_url},
+      {macro:"{$KUBE.API.COMPONENTSTATUSES.ENDPOINT}",value:"/api/v1/componentstatuses"},
+      {macro:"{$KUBE.API.LIVEZ.ENDPOINT}",value:"/livez"},
+      {macro:"{$KUBE.API.READYZ.ENDPOINT}",value:"/readyz"},
+      {macro:"{$KUBE.API_SERVER.PORT}",value:"6443"},
+      {macro:"{$KUBE.API_SERVER.SCHEME}",value:"https"},
       {macro:"{$KUBE.API.TOKEN}",value:$token,type:"1"},
+      {macro:"{$KUBE.CONTROLLER_MANAGER.PORT}",value:"10257"},
+      {macro:"{$KUBE.CONTROLLER_MANAGER.SCHEME}",value:"https"},
+      {macro:"{$KUBE.CONTROL_PLANE.TAINT}",value:$control_plane_taint},
+      {macro:"{$KUBE.KUBELET.FILTER.ANNOTATIONS}",value:$kubelet_filter_annotations},
+      {macro:"{$KUBE.KUBELET.FILTER.LABELS}",value:$kubelet_filter_labels},
+      {macro:"{$KUBE.KUBELET.PORT}",value:"10250"},
+      {macro:"{$KUBE.KUBELET.SCHEME}",value:"https"},
       {macro:"{$KUBE.NODES.ENDPOINT.NAME}",value:$endpoint_name},
+      {macro:"{$KUBE.STATE.ENDPOINT.NAME}",value:$state_endpoint_name},
+      {macro:"{$OPENSHIFT.STATE.ENDPOINT.NAME}",value:$openshift_state_endpoint_name},
+      {macro:"{$KUBE.LLD.FILTER.KUBELET_NODE.MATCHES}",value:$node_matches},
+      {macro:"{$KUBE.LLD.FILTER.KUBELET_NODE.NOT_MATCHES}",value:"CHANGE_IF_NEEDED"},
       {macro:"{$KUBE.LLD.FILTER.NODE.MATCHES}",value:$node_matches},
       {macro:"{$KUBE.LLD.FILTER.NODE.NOT_MATCHES}",value:"CHANGE_IF_NEEDED"},
       {macro:"{$KUBE.LLD.FILTER.NODE.ROLE.MATCHES}",value:".*"},
@@ -694,6 +720,11 @@ ensure_official_kubernetes_hosts() {
       {macro:"{$KUBE.LLD.FILTER.POD.NAMESPACE.NOT_MATCHES}",value:"CHANGE_IF_NEEDED"},
       {macro:"{$KUBE.LLD.FILTER.NAMESPACE.MATCHES}",value:$namespace_matches},
       {macro:"{$KUBE.LLD.FILTER.NAMESPACE.NOT_MATCHES}",value:"CHANGE_IF_NEEDED"},
+      {macro:"{$KUBE.LLD.FILTER.PV.MATCHES}",value:".*"},
+      {macro:"{$KUBE.LLD.FILTER.PV.NOT_MATCHES}",value:"CHANGE_IF_NEEDED"},
+      {macro:"{$KUBE.REPLICA.MISMATCH.EVAL_PERIOD}",value:"#5"},
+      {macro:"{$KUBE.SCHEDULER.PORT}",value:"10259"},
+      {macro:"{$KUBE.SCHEDULER.SCHEME}",value:"https"},
       {macro:"{$KUBE.HTTP.PROXY}",value:""}
     ]')"
 

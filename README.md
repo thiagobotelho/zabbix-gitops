@@ -210,6 +210,9 @@ usam as macros:
 | `{$KUBE.API.SERVER.URL}` | `https://kubernetes.default.svc.cluster.local:443/metrics` | Endpoint `/metrics` do API server |
 | `{$KUBE.API.TOKEN}` | Secret `zabbix-kubernetes-monitor-token` | Criada como macro secreta no Zabbix |
 | `{$KUBE.NODES.ENDPOINT.NAME}` | `zabbix-agent2` | Endpoint usado pelos templates de nodes |
+| `{$KUBE.STATE.ENDPOINT.NAME}` | `kube-state-metrics` | Endpoint do kube-state-metrics no OpenShift Monitoring |
+| `{$OPENSHIFT.STATE.ENDPOINT.NAME}` | `openshift-state-metrics` | Endpoint do openshift-state-metrics |
+| `{$KUBE.CONTROL_PLANE.TAINT}` | `node-role.kubernetes.io/control-plane` | Taint usado pela descoberta de control plane |
 | `{$KUBE.LLD.FILTER.*}` | filtros do `.env` | Limita descoberta para o CRC/local lab |
 
 Variáveis úteis:
