@@ -12,3 +12,14 @@ labels:
       app.kubernetes.io/managed-by: argocd
       app.kubernetes.io/environment: producao
     includeSelectors: false
+
+patches:
+  - target:
+      kind: Deployment
+      name: zabbix-web
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: ZBX_SSO_SETTINGS
+          value: '{"baseurl":"https://zabbix-producao.apps.example.invalid","use_proxy_headers":true,"strict":true}'

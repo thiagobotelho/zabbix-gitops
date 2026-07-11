@@ -54,8 +54,11 @@ O script faz:
   `grafana-gitops`;
 - habilita SAML no Zabbix 7.4 apontando para o realm `observability` do
   Keycloak;
+- extrai o certificado público SAML do metadata do Keycloak e cria/atualiza o
+  ConfigMap `zabbix-saml-idp` com a chave `idp.crt`;
 - habilita JIT provisioning SAML, usando atributos `username`, `firstName`,
   `lastName` e `groups`;
+- habilita SCIM no diretório SAML do Zabbix quando `ZABBIX_ENABLE_SAML_SCIM=true`;
 - mapeia grupos Keycloak para grupos/roles Zabbix;
 - garante usuários locais `zabbix-admin` e `observability-admin` como fallback;
 - cria/atualiza hosts Agent2 usando o Service `zabbix-agent2:10050`, evitando
@@ -64,8 +67,8 @@ O script faz:
   Grafana e o próprio Zabbix;
 - cria/vincula templates HTTP funcionais para OpenShift API, Argo CD, Keycloak,
   Grafana, Zabbix Web, Prometheus Apps e Pyroscope;
-- importa/atualiza os templates oficiais Kubernetes 7.4 do Zabbix e cria hosts
-  que os reutilizam.
+- importa/atualiza os templates oficiais Kubernetes 7.4 do Zabbix e os vincula
+  ao host único `OpenShift Local`, evitando hosts duplicados por template.
 
 ### Secrets
 
@@ -74,6 +77,12 @@ O script faz:
 | `zabbix-db` | `zabbix` | `username`, `password`, `database` | PostgreSQL, Zabbix Server e Zabbix Web |
 | `zabbix-kubernetes-monitor-token` | `zabbix` | `token`, `ca.crt`, `namespace` | Zabbix API bootstrap e templates Kubernetes oficiais |
 | `zabbix-datasource` | `grafana` | `username`, `password` | Grafana datasource Zabbix |
+
+### ConfigMaps
+
+| ConfigMap | Namespace | Chave | Consumidor |
+|---|---|---|---|
+| `zabbix-saml-idp` | `zabbix` | `idp.crt` | Zabbix Web SAML |
 
 Criação/rotação do banco:
 
@@ -91,6 +100,11 @@ Rotação do usuário técnico do Grafana:
 ZABBIX_GRAFANA_PASSWORD="$(openssl rand -base64 36)" scripts/bootstrap-zabbix.sh
 ```
 
+Rotação do certificado IdP SAML: rotacione a chave/certificado no Keycloak e
+reexecute `scripts/bootstrap-zabbix.sh`. O script compara o conteúdo de
+`idp.crt`, atualiza o ConfigMap e reinicia `deployment/zabbix-web` quando
+`ZABBIX_RESTART_WEB_ON_IDP_CERT_CHANGE=true`.
+
 ### SSO via Keycloak
 
 O Zabbix 7.4 suporta SAML para SSO. O script configura:
@@ -101,6 +115,16 @@ O Zabbix 7.4 suporta SAML para SSO. O script configura:
 - ACS: `${ZABBIX_BASE_URL}/index_sso.php?acs`.
 
 O client SAML correspondente é mantido em `keycloak-gitops`.
+
+O deployment `zabbix-web` monta `/etc/zabbix/web/certs/idp.crt` e define:
+
+```text
+ZBX_SSO_IDP_CERT=/etc/zabbix/web/certs/idp.crt
+ZBX_SSO_SETTINGS={"baseurl":"<URL pública do Zabbix>","use_proxy_headers":true,"strict":true}
+```
+
+`use_proxy_headers` é necessário porque a Route do OpenShift termina TLS na
+borda e encaminha a requisição HTTP para o container.
 
 ### JIT provisioning
 
@@ -118,21 +142,34 @@ Mapeamentos criados:
 
 | Grupo Keycloak | Grupo Zabbix | Role |
 |---|---|---|
-| `/observability/zabbix-super-admins` | `Zabbix administrators` | `Super admin role` |
-| `/observability/zabbix-admins` | `Zabbix administrators` | `Super admin role` |
-| `/observability/zabbix-users` | `Grafana datasource readers` | `User role` |
-| `/observability/zabbix-guests` | `Grafana datasource readers` | `User role` |
+| `zabbix-super-admins` | `Zabbix administrators` | `Super admin role` |
+| `zabbix-admins` | `Zabbix administrators` | `Super admin role` |
+| `zabbix-users` | `Grafana datasource readers` | `User role` |
+| `zabbix-guests` | `Grafana datasource readers` | `User role` |
 
 O grupo `Disabled provisioned users` é criado com `users_status=disabled` e
 configurado em `disabled_usrgrpid`, permitindo desabilitar usuários
 deprovisionados pelo IdP.
+
+O client SAML do Keycloak emite o atributo `groups` sem caminho completo, por
+isso os padrões acima não usam a barra inicial. As opções de assinatura ficam
+conservadoras: o Zabbix valida assertions assinadas pelo IdP, mas não exige
+criptografia nem assinatura de AuthN/logout requests enquanto não houver
+certificado/chave de SP provisionados no frontend.
+
+SCIM é habilitado no diretório SAML para ambientes que publicarem o endpoint e
+um cliente SCIM compatível. No laboratório CRC, o caminho principal continua
+sendo JIT no login; SCIM fica preparado para evolução sem armazenar token no Git.
 
 ### Zabbix Agent2
 
 O Agent2 roda em pod separado do Zabbix Server. Em Kubernetes, `127.0.0.1` só
 apontaria para o próprio pod do Server; por isso checks passivos devem usar o
 Service `zabbix-agent2` na porta `10050`. O bootstrap cria/atualiza os hosts
-`openshift-local` e `Zabbix server` para essa interface DNS.
+`openshift-local` e `Zabbix server` para essa interface DNS. O nome visível
+padrão do host `openshift-local` é `OpenShift Local`; o host padrão do Zabbix
+mantém o nome `Zabbix server`, evitando alterações desnecessárias em objetos
+criados pela imagem oficial.
 
 O container Agent2 aceita passivos via `ZBX_PASSIVESERVERS=0.0.0.0/0` porque o
 IP de origem do pod do Server não é o ClusterIP do Service. A restrição de rede
@@ -152,9 +189,9 @@ O bootstrap trabalha em duas camadas:
    bootstrap a partir da integração oficial:
    `Kubernetes nodes by HTTP`, `Kubernetes cluster state by HTTP` e
    `Kubernetes API server by HTTP`, além dos templates de kubelet,
-   controller-manager e scheduler usados por descoberta. Eles coletam estado do
-   cluster, nodes e métricas da API usando token de ServiceAccount, não apenas
-   web scenarios.
+   controller-manager e scheduler usados por descoberta. Eles são vinculados ao
+   host único `OpenShift Local` e coletam estado do cluster, nodes e métricas da
+   API usando token de ServiceAccount, não apenas web scenarios.
 2. Templates locais criados pela API do Zabbix para endpoints críticos:
    `Template OpenShift API by HTTP`, `Template Argo CD by HTTP`,
    `Template Keycloak by HTTP`, `Template Grafana by HTTP`,
@@ -180,6 +217,11 @@ ZABBIX_PROVISION_KUBERNETES_TEMPLATES=true
 ZABBIX_IMPORT_KUBERNETES_TEMPLATES=true
 ZABBIX_KUBERNETES_TEMPLATE_RELEASE=7.4
 ZABBIX_PROVISION_COMPONENT_TEMPLATES=true
+ZABBIX_MANAGE_SAML_IDP_CERT=true
+ZABBIX_ENABLE_SAML_SCIM=true
+ZABBIX_AGENT_VISIBLE_NAME="OpenShift Local"
+ZABBIX_DEFAULT_AGENT_VISIBLE_NAME="Zabbix server"
+ZABBIX_CLEANUP_LEGACY_OPENSHIFT_HOSTS=true
 ZABBIX_KUBERNETES_API_URL=https://kubernetes.default.svc.cluster.local:443
 ZABBIX_KUBE_NAMESPACE_MATCHES='^(default|openshift-.+|grafana|zabbix|keycloak.*|tempo|loki|pyroscope|observability.*)$'
 PYROSCOPE_READY_URL=http://pyroscope.pyroscope.svc:4040/ready
@@ -191,6 +233,7 @@ PROMETHEUS_APPS_READY_URL=http://apps-monitoring-prometheus.observability-apps.s
 ```bash
 oc -n zabbix get pods,svc,route
 oc -n zabbix get sa,secret zabbix-kubernetes-monitor zabbix-kubernetes-monitor-token
+oc -n zabbix get configmap zabbix-saml-idp
 oc -n zabbix get svc zabbix-agent2
 curl -k "$(oc -n zabbix get route zabbix -o jsonpath='https://{.spec.host}')/api_jsonrpc.php"
 oc -n grafana get secret zabbix-datasource
@@ -216,6 +259,9 @@ oc kustomize overlays/producao >/tmp/zabbix-prod.yaml
 oc apply --dry-run=client -k overlays/desenvolvimento
 ```
 
-O Route não fixa host; OpenShift gera o domínio por cluster. O script de
-bootstrap descobre Zabbix, Keycloak, Grafana e Argo CD por Route quando URLs não
-são informadas no `.env`. Veja `docs/AMBIENTES.md`.
+O Route da base não fixa host; OpenShift gera o domínio por cluster. Como SAML
+exige `baseurl` estável, cada overlay define `ZBX_SSO_SETTINGS` com a URL
+pública esperada do ambiente. Ajuste esse valor junto com o domínio real antes
+de promover para aceite/produção. O script de bootstrap descobre Zabbix,
+Keycloak, Grafana e Argo CD por Route quando URLs não são informadas no `.env`.
+Veja `docs/AMBIENTES.md`.

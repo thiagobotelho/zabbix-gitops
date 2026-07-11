@@ -58,6 +58,11 @@ ZABBIX_GRAFANA_USER="${ZABBIX_GRAFANA_USER:-grafana-datasource}"
 ZABBIX_GRAFANA_PASSWORD="${ZABBIX_GRAFANA_PASSWORD:-}"
 ZABBIX_ENABLE_SAML="${ZABBIX_ENABLE_SAML:-true}"
 ZABBIX_ENABLE_SAML_JIT="${ZABBIX_ENABLE_SAML_JIT:-true}"
+ZABBIX_ENABLE_SAML_SCIM="${ZABBIX_ENABLE_SAML_SCIM:-true}"
+ZABBIX_MANAGE_SAML_IDP_CERT="${ZABBIX_MANAGE_SAML_IDP_CERT:-true}"
+ZABBIX_SAML_IDP_CONFIGMAP="${ZABBIX_SAML_IDP_CONFIGMAP:-zabbix-saml-idp}"
+ZABBIX_SAML_IDP_CERT_KEY="${ZABBIX_SAML_IDP_CERT_KEY:-idp.crt}"
+ZABBIX_RESTART_WEB_ON_IDP_CERT_CHANGE="${ZABBIX_RESTART_WEB_ON_IDP_CERT_CHANGE:-true}"
 KEYCLOAK_NAMESPACE="${KEYCLOAK_NAMESPACE:-keycloak-dev}"
 KEYCLOAK_ROUTE_NAME="${KEYCLOAK_ROUTE_NAME:-keycloak}"
 KEYCLOAK_BASE_URL="${KEYCLOAK_BASE_URL:-}"
@@ -76,11 +81,13 @@ ZABBIX_IMPORT_KUBERNETES_TEMPLATES="${ZABBIX_IMPORT_KUBERNETES_TEMPLATES:-true}"
 ZABBIX_KUBERNETES_TEMPLATE_RELEASE="${ZABBIX_KUBERNETES_TEMPLATE_RELEASE:-7.4}"
 ZABBIX_PROVISION_COMPONENT_TEMPLATES="${ZABBIX_PROVISION_COMPONENT_TEMPLATES:-true}"
 ZABBIX_AGENT_HOST="${ZABBIX_AGENT_HOST:-openshift-local}"
-ZABBIX_AGENT_VISIBLE_NAME="${ZABBIX_AGENT_VISIBLE_NAME:-OpenShift Local - Zabbix Agent2}"
+ZABBIX_AGENT_VISIBLE_NAME="${ZABBIX_AGENT_VISIBLE_NAME:-OpenShift Local}"
 ZABBIX_AGENT_DNS="${ZABBIX_AGENT_DNS:-zabbix-agent2}"
 ZABBIX_AGENT_PORT="${ZABBIX_AGENT_PORT:-10050}"
 ZABBIX_AGENT_TEMPLATE="${ZABBIX_AGENT_TEMPLATE:-Linux by Zabbix agent}"
 ZABBIX_DEFAULT_AGENT_HOST="${ZABBIX_DEFAULT_AGENT_HOST:-Zabbix server}"
+ZABBIX_DEFAULT_AGENT_VISIBLE_NAME="${ZABBIX_DEFAULT_AGENT_VISIBLE_NAME:-Zabbix server}"
+ZABBIX_CLEANUP_LEGACY_OPENSHIFT_HOSTS="${ZABBIX_CLEANUP_LEGACY_OPENSHIFT_HOSTS:-true}"
 ZABBIX_COMPONENT_TEMPLATE_GROUP="${ZABBIX_COMPONENT_TEMPLATE_GROUP:-Templates/Observability}"
 ZABBIX_KUBERNETES_MONITOR_SECRET="${ZABBIX_KUBERNETES_MONITOR_SECRET:-zabbix-kubernetes-monitor-token}"
 ZABBIX_KUBERNETES_API_URL="${ZABBIX_KUBERNETES_API_URL:-}"
@@ -127,6 +134,66 @@ route_url() {
   fi
 }
 
+render_keycloak_saml_idp_cert() {
+  local descriptor cert
+  descriptor="$(curl -ksS --fail "${KEYCLOAK_BASE_URL%/}/realms/${KEYCLOAK_REALM}/protocol/saml/descriptor")"
+  cert="$(printf '%s' "${descriptor}" \
+    | tr -d '\n\r\t ' \
+    | sed -n 's/.*<ds:X509Certificate>\([^<]*\)<\\/ds:X509Certificate>.*/\1/p' \
+    | head -n 1)"
+
+  if [[ -z "${cert}" ]]; then
+    cert="$(printf '%s' "${descriptor}" \
+      | tr -d '\n\r\t ' \
+      | sed -n 's/.*<X509Certificate>\([^<]*\)<\\/X509Certificate>.*/\1/p' \
+      | head -n 1)"
+  fi
+
+  if [[ -z "${cert}" ]]; then
+    echo "[ERROR] Não foi possível extrair o certificado SAML do metadata do Keycloak." >&2
+    exit 1
+  fi
+
+  {
+    printf '%s\n' '-----BEGIN CERTIFICATE-----'
+    printf '%s' "${cert}" | fold -w 64
+    printf '\n%s\n' '-----END CERTIFICATE-----'
+  }
+}
+
+ensure_saml_idp_configmap() {
+  local tmp cert_current cert_next
+
+  if [[ "${ZABBIX_MANAGE_SAML_IDP_CERT}" != "true" ]]; then
+    return 0
+  fi
+
+  if [[ -z "${KEYCLOAK_BASE_URL}" ]]; then
+    echo "[WARN] KEYCLOAK_BASE_URL ausente; ConfigMap ${ZABBIX_NAMESPACE}/${ZABBIX_SAML_IDP_CONFIGMAP} não será atualizado." >&2
+    return 0
+  fi
+
+  tmp="$(mktemp)"
+  render_keycloak_saml_idp_cert > "${tmp}"
+  cert_next="$(cat "${tmp}")"
+  cert_current="$("${OC_BIN}" -n "${ZABBIX_NAMESPACE}" get configmap "${ZABBIX_SAML_IDP_CONFIGMAP}" -o json 2>/dev/null \
+    | jq -r --arg key "${ZABBIX_SAML_IDP_CERT_KEY}" '.data[$key] // ""' || true)"
+
+  if [[ "${cert_current}" == "${cert_next}" ]]; then
+    rm -f "${tmp}"
+    return 0
+  fi
+
+  "${OC_BIN}" -n "${ZABBIX_NAMESPACE}" create configmap "${ZABBIX_SAML_IDP_CONFIGMAP}" \
+    "--from-file=${ZABBIX_SAML_IDP_CERT_KEY}=${tmp}" \
+    --dry-run=client -o yaml | "${OC_BIN}" apply -f - >/dev/null
+  rm -f "${tmp}"
+
+  if [[ "${ZABBIX_RESTART_WEB_ON_IDP_CERT_CHANGE}" == "true" ]]; then
+    "${OC_BIN}" -n "${ZABBIX_NAMESPACE}" rollout restart deployment/zabbix-web >/dev/null 2>&1 || true
+  fi
+}
+
 if [[ -z "${KEYCLOAK_BASE_URL}" ]]; then
   KEYCLOAK_BASE_URL="$(route_url "${KEYCLOAK_NAMESPACE}" "${KEYCLOAK_ROUTE_NAME}")"
 fi
@@ -142,6 +209,8 @@ if [[ -z "${ZABBIX_API_URL:-}" ]]; then
   fi
   ZABBIX_API_URL="${ZABBIX_BASE_URL}/api_jsonrpc.php"
 fi
+
+ensure_saml_idp_configmap
 
 json_escape() {
   jq -Rn --arg value "$1" '$value'
@@ -494,6 +563,25 @@ ensure_host_with_templates_and_macros() {
   ensure_host_macros "${hostid}" "${macros_json}"
 }
 
+delete_host_if_present() {
+  local host="$1"
+  local ids
+  ids="$(zbx_result host.get "$(jq -n --arg host "${host}" '{output:["hostid"],filter:{host:$host}}')" | jq '[.[].hostid]')"
+  if [[ "$(printf '%s' "${ids}" | jq 'length')" != "0" ]]; then
+    zbx_result host.delete "${ids}" >/dev/null
+  fi
+}
+
+cleanup_legacy_openshift_hosts() {
+  if [[ "${ZABBIX_CLEANUP_LEGACY_OPENSHIFT_HOSTS}" != "true" ]]; then
+    return 0
+  fi
+
+  delete_host_if_present "openshift-local-kubernetes-nodes"
+  delete_host_if_present "openshift-local-kubernetes-state"
+  delete_host_if_present "openshift-local-kubernetes-apiserver"
+}
+
 kube_token_from_secret() {
   local token_b64
   token_b64="$("${OC_BIN}" -n "${ZABBIX_NAMESPACE}" get secret "${ZABBIX_KUBERNETES_MONITOR_SECRET}" -o jsonpath='{.data.token}' 2>/dev/null || true)"
@@ -601,29 +689,20 @@ ensure_official_kubernetes_hosts() {
       {macro:"{$KUBE.HTTP.PROXY}",value:""}
     ]')"
 
-  ensure_host_with_templates_and_macros \
-    "openshift-local-kubernetes-nodes" \
-    "OpenShift Local - Kubernetes Nodes" \
-    "kubernetes" \
-    "${host_group_id}" \
-    "${macros_json}" \
-    "${ZABBIX_KUBERNETES_NODES_TEMPLATE}"
+  cleanup_legacy_openshift_hosts
 
   ensure_host_with_templates_and_macros \
-    "openshift-local-kubernetes-state" \
-    "OpenShift Local - Kubernetes Cluster State" \
+    "${ZABBIX_AGENT_HOST}" \
+    "${ZABBIX_AGENT_VISIBLE_NAME}" \
     "kubernetes" \
     "${host_group_id}" \
     "${macros_json}" \
-    "${ZABBIX_KUBERNETES_CLUSTER_TEMPLATE}"
-
-  ensure_host_with_templates_and_macros \
-    "openshift-local-kubernetes-apiserver" \
-    "OpenShift Local - Kubernetes API Server" \
-    "kubernetes" \
-    "${host_group_id}" \
-    "${macros_json}" \
-    "${ZABBIX_KUBERNETES_API_TEMPLATE}"
+    "${ZABBIX_KUBERNETES_NODES_TEMPLATE}" \
+    "${ZABBIX_KUBERNETES_CLUSTER_TEMPLATE}" \
+    "${ZABBIX_KUBERNETES_API_TEMPLATE}" \
+    "${ZABBIX_KUBERNETES_KUBELET_TEMPLATE}" \
+    "${ZABBIX_KUBERNETES_CONTROLLER_TEMPLATE}" \
+    "${ZABBIX_KUBERNETES_SCHEDULER_TEMPLATE}"
 }
 
 ensure_component_host() {
@@ -716,7 +795,7 @@ ensure_agent_host() {
 }
 
 ensure_saml() {
-  local directory_id admin_group admin_role reader_group reader_role disabled_group provision_groups jit_enabled
+  local directory_id admin_group admin_role reader_group reader_role disabled_group provision_groups jit_enabled scim_enabled
   directory_id="$(zbx_result userdirectory.get "$(jq -n '{output:"extend",filter:{idp_type:"2"}}')" | jq -r '.[0].userdirectoryid // empty')"
   admin_group="$(user_group_id_by_name "Zabbix administrators")"
   admin_role="$(role_id_by_name "Super admin role")"
@@ -729,15 +808,20 @@ ensure_saml() {
     --arg reader_group "${reader_group}" \
     --arg reader_role "${reader_role}" \
     '[
-      {name:"/observability/zabbix-super-admins", roleid:$admin_role, user_groups:[{usrgrpid:$admin_group}]},
-      {name:"/observability/zabbix-admins", roleid:$admin_role, user_groups:[{usrgrpid:$admin_group}]},
-      {name:"/observability/zabbix-users", roleid:$reader_role, user_groups:[{usrgrpid:$reader_group}]},
-      {name:"/observability/zabbix-guests", roleid:$reader_role, user_groups:[{usrgrpid:$reader_group}]}
+      {name:"zabbix-super-admins", roleid:$admin_role, user_groups:[{usrgrpid:$admin_group}]},
+      {name:"zabbix-admins", roleid:$admin_role, user_groups:[{usrgrpid:$admin_group}]},
+      {name:"zabbix-users", roleid:$reader_role, user_groups:[{usrgrpid:$reader_group}]},
+      {name:"zabbix-guests", roleid:$reader_role, user_groups:[{usrgrpid:$reader_group}]}
     ]')"
   if [[ "${ZABBIX_ENABLE_SAML_JIT}" == "true" ]]; then
     jit_enabled="1"
   else
     jit_enabled="0"
+  fi
+  if [[ "${ZABBIX_ENABLE_SAML_SCIM}" == "true" ]]; then
+    scim_enabled="1"
+  else
+    scim_enabled="0"
   fi
 
   local params
@@ -751,6 +835,7 @@ ensure_saml() {
     --arg first_name_attr "${ZABBIX_SAML_FIRST_NAME_ATTRIBUTE}" \
     --arg last_name_attr "${ZABBIX_SAML_LAST_NAME_ATTRIBUTE}" \
     --arg jit_enabled "${jit_enabled}" \
+    --arg scim_enabled "${scim_enabled}" \
     --argjson provision_groups "${provision_groups}" \
     '{idp_type:"2",
       name:"Keycloak SAML",
@@ -767,7 +852,7 @@ ensure_saml() {
       sign_logout_responses:"0",
       sign_messages:"0",
       sign_assertions:"1",
-      scim_status:"0",
+      scim_status:$scim_enabled,
       provision_status:$jit_enabled,
       group_name:$group_attr,
       user_username:$first_name_attr,
@@ -928,7 +1013,7 @@ fi
 
 if [[ "${ZABBIX_PROVISION_AGENT}" == "true" ]]; then
   ensure_agent_host "${ZABBIX_AGENT_HOST}" "${ZABBIX_AGENT_VISIBLE_NAME}" "${ZABBIX_AGENT_DNS}" "${ZABBIX_AGENT_PORT}" "${monitor_group_id}" "${ZABBIX_AGENT_TEMPLATE}"
-  ensure_agent_host "${ZABBIX_DEFAULT_AGENT_HOST}" "Zabbix Server - Agent2" "${ZABBIX_AGENT_DNS}" "${ZABBIX_AGENT_PORT}" "${monitor_group_id}" "${ZABBIX_AGENT_TEMPLATE}"
+  ensure_agent_host "${ZABBIX_DEFAULT_AGENT_HOST}" "${ZABBIX_DEFAULT_AGENT_VISIBLE_NAME}" "${ZABBIX_AGENT_DNS}" "${ZABBIX_AGENT_PORT}" "${monitor_group_id}" "${ZABBIX_AGENT_TEMPLATE}"
 fi
 
 echo "[OK] Zabbix API bootstrap concluído."
