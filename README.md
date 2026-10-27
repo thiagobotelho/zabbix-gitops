@@ -198,3 +198,7 @@ Referências:
 - https://www.zabbix.com/documentation/7.4/en/manual/installation/containers
 - https://www.zabbix.com/documentation/7.4/en/manual/web_interface/frontend_sections/users/authentication/saml
 - https://www.zabbix.com/documentation/7.4/en/manual/api/reference/userdirectory/create
+
+## Aprender a configuração
+
+Consulte o [guia comentado](docs/APRENDIZADO.md) para entender componentes, escolhas, testes positivos/negativos e reversão.

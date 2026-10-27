@@ -19,3 +19,8 @@ jobs:
             while IFS= read -r -d '' file; do
               kubectl kustomize "$(dirname "$file")" >/dev/null
             done
+      - name: Validar schemas de CRDs
+        run: |
+          python3 -m venv /tmp/crd-schema-venv
+          /tmp/crd-schema-venv/bin/pip install PyYAML==6.0.3 jsonschema==4.26.0
+          /tmp/crd-schema-venv/bin/python tests/validate-crds.py

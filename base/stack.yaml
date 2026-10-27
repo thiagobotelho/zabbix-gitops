@@ -5,6 +5,7 @@ metadata:
   name: zabbix-postgresql
 spec:
   accessModes: [ReadWriteOnce]
+  # Recursos ou dependências desta seção; avaliar seu escopo antes de alterar.
   resources:
     requests:
       storage: 10Gi
@@ -14,10 +15,12 @@ kind: Deployment
 metadata:
   name: zabbix-postgresql
 spec:
+  # Número de instâncias; réplicas isoladamente não garantem alta disponibilidade.
   replicas: 1
   strategy:
     type: Recreate
     rollingUpdate: null
+  # Seletores precisam corresponder aos labels dos recursos de destino.
   selector:
     matchLabels: {app: zabbix-postgresql}
   template:
@@ -41,6 +44,7 @@ spec:
           volumeMounts: [{name: data, mountPath: /var/lib/pgsql/data}]
       volumes:
         - name: data
+          # Dados persistentes exigem capacidade, classe de armazenamento e backup.
           persistentVolumeClaim: {claimName: zabbix-postgresql}
 ---
 apiVersion: v1
@@ -76,6 +80,7 @@ spec:
             - name: POSTGRES_DB
               valueFrom: {secretKeyRef: {name: zabbix-db, key: database}}
           ports: [{name: trapper, containerPort: 10051}]
+          # Prontidão controla recebimento de tráfego, sem provar integrações externas.
           readinessProbe:
             tcpSocket: {port: trapper}
             initialDelaySeconds: 20
@@ -150,6 +155,7 @@ metadata:
 spec:
   to: {kind: Service, name: zabbix-web}
   port: {targetPort: http}
+  # TLS define transporte e confiança; não desabilitar validação para contornar erros.
   tls:
     termination: edge
     insecureEdgeTerminationPolicy: Redirect
