@@ -14,3 +14,9 @@ Keycloak autentica via SAML e o Zabbix associa atributos a usuários/grupos. Boo
 6. Defina reversão por recurso/arquivo e preserve dados persistentes antes de mudanças.
 
 Os comentários dos manifests explicam escolhas; não comprovam disponibilidade do componente. Exemplos fora de entradas Kustomize não são implantados automaticamente.
+
+O caminho automatizado de certificado e IdP está em `scripts/bootstrap-zabbix.sh`.
+O helper XML seleciona assinatura por namespace/uso e rejeita ambiguidade.
+Leia o procedimento de execução somente SAML no README e identifique quais
+recursos são alterados antes de executar. HTTPS e assinatura SAML usam
+certificados com propósitos diferentes.

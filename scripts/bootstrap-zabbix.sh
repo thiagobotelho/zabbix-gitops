@@ -36,7 +36,8 @@ load_env_file() {
       value="${BASH_REMATCH[1]}"
     fi
 
-    export "${key}=${value}"
+    # Variáveis fornecidas pelo chamador têm precedência sobre .env.
+    [[ -v "${key}" ]] || export "${key}=${value}"
   done < "${env_file}"
 }
 
@@ -65,7 +66,7 @@ ZABBIX_GRAFANA_READ_HOST_GROUPS="${ZABBIX_GRAFANA_READ_HOST_GROUPS:-}"
 
 ZABBIX_ENABLE_SAML="${ZABBIX_ENABLE_SAML:-true}"
 ZABBIX_ENABLE_SAML_JIT="${ZABBIX_ENABLE_SAML_JIT:-true}"
-ZABBIX_ENABLE_SAML_SCIM="${ZABBIX_ENABLE_SAML_SCIM:-true}"
+ZABBIX_ENABLE_SAML_SCIM="${ZABBIX_ENABLE_SAML_SCIM:-false}"
 ZABBIX_MANAGE_SAML_IDP_CERT="${ZABBIX_MANAGE_SAML_IDP_CERT:-true}"
 ZABBIX_SAML_IDP_CONFIGMAP="${ZABBIX_SAML_IDP_CONFIGMAP:-zabbix-saml-idp}"
 ZABBIX_SAML_IDP_CERT_KEY="${ZABBIX_SAML_IDP_CERT_KEY:-idp.crt}"
@@ -94,6 +95,14 @@ require curl
 require jq
 require openssl
 require base64
+require python3
+
+# HTTPS validado pelo sistema ou pela CA pública fornecida pelo operador.
+CURL_TLS_ARGS=(--fail --silent --show-error --connect-timeout 10 --max-time 60)
+if [[ -n "${BOOTSTRAP_CA_FILE:-}" ]]; then
+  [[ -r "${BOOTSTRAP_CA_FILE}" ]] || { echo "[ERROR] BOOTSTRAP_CA_FILE ilegível" >&2; exit 1; }
+  CURL_TLS_ARGS+=(--cacert "${BOOTSTRAP_CA_FILE}")
+fi
 
 if [[ -z "${ZABBIX_ADMIN_PASSWORD}" ]]; then
   echo "[ERROR] Defina ZABBIX_ADMIN_PASSWORD no .env ou no ambiente antes de executar o bootstrap." >&2
@@ -111,30 +120,11 @@ route_url() {
 }
 
 render_keycloak_saml_idp_cert() {
-  local descriptor cert
-  descriptor="$(curl -ksS --fail "${KEYCLOAK_BASE_URL%/}/realms/${KEYCLOAK_REALM}/protocol/saml/descriptor")"
-  cert="$(printf '%s' "${descriptor}" \
-    | tr -d '\n\r\t ' \
-    | sed -n 's#.*<ds:X509Certificate>\([^<]*\)</ds:X509Certificate>.*#\1#p' \
-    | head -n 1)"
-
-  if [[ -z "${cert}" ]]; then
-    cert="$(printf '%s' "${descriptor}" \
-      | tr -d '\n\r\t ' \
-      | sed -n 's#.*<X509Certificate>\([^<]*\)</X509Certificate>.*#\1#p' \
-      | head -n 1)"
-  fi
-
-  if [[ -z "${cert}" ]]; then
-    echo "[ERROR] Não foi possível extrair o certificado SAML do metadata do Keycloak." >&2
-    exit 1
-  fi
-
-  {
-    printf '%s\n' '-----BEGIN CERTIFICATE-----'
-    printf '%s' "${cert}" | fold -w 64
-    printf '\n%s\n' '-----END CERTIFICATE-----'
-  }
+  curl "${CURL_TLS_ARGS[@]}" \
+    "${KEYCLOAK_BASE_URL%/}/realms/${KEYCLOAK_REALM}/protocol/saml/descriptor" \
+    | python3 "${ROOT_DIR}/scripts/extract-saml-signing-cert.py" \
+      --entity "${KEYCLOAK_BASE_URL%/}/realms/${KEYCLOAK_REALM}" \
+      --fingerprint "${KEYCLOAK_SAML_CERT_SHA256:-}"
 }
 
 ensure_saml_idp_configmap() {
@@ -150,10 +140,13 @@ ensure_saml_idp_configmap() {
   fi
 
   tmp="$(mktemp)"
-  render_keycloak_saml_idp_cert > "${tmp}"
+  if ! render_keycloak_saml_idp_cert > "${tmp}"; then
+    rm -f "${tmp}"
+    return 1
+  fi
   cert_next="$(cat "${tmp}")"
-  cert_current="$("${OC_BIN}" -n "${ZABBIX_NAMESPACE}" get configmap "${ZABBIX_SAML_IDP_CONFIGMAP}" -o json 2>/dev/null \
-    | jq -r --arg key "${ZABBIX_SAML_IDP_CERT_KEY}" '.data[$key] // ""' || true)"
+  cert_current="$("${OC_BIN}" -n "${ZABBIX_NAMESPACE}" get configmap "${ZABBIX_SAML_IDP_CONFIGMAP}" --ignore-not-found -o json \
+    | jq -r --arg key "${ZABBIX_SAML_IDP_CERT_KEY}" '.data[$key] // ""')"
 
   if [[ "${cert_current}" == "${cert_next}" ]]; then
     rm -f "${tmp}"
@@ -166,7 +159,8 @@ ensure_saml_idp_configmap() {
   rm -f "${tmp}"
 
   if [[ "${ZABBIX_RESTART_WEB_ON_IDP_CERT_CHANGE}" == "true" ]]; then
-    "${OC_BIN}" -n "${ZABBIX_NAMESPACE}" rollout restart deployment/zabbix-web >/dev/null 2>&1 || true
+    "${OC_BIN}" -n "${ZABBIX_NAMESPACE}" rollout restart deployment/zabbix-web >/dev/null
+    "${OC_BIN}" -n "${ZABBIX_NAMESPACE}" rollout status deployment/zabbix-web --timeout=5m
   fi
 }
 
@@ -178,6 +172,9 @@ if [[ -z "${ZABBIX_BASE_URL}" ]]; then
   ZABBIX_BASE_URL="$(route_url "${ZABBIX_NAMESPACE}" "${ZABBIX_ROUTE_NAME}")"
 fi
 
+KEYCLOAK_BASE_URL="${KEYCLOAK_BASE_URL%/}"
+ZABBIX_BASE_URL="${ZABBIX_BASE_URL%/}"
+
 if [[ -z "${ZABBIX_API_URL:-}" ]]; then
   if [[ -z "${ZABBIX_BASE_URL}" ]]; then
     echo "[ERROR] Defina ZABBIX_API_URL/ZABBIX_BASE_URL ou exponha a Route ${ZABBIX_NAMESPACE}/${ZABBIX_ROUTE_NAME}." >&2
@@ -186,16 +183,21 @@ if [[ -z "${ZABBIX_API_URL:-}" ]]; then
   ZABBIX_API_URL="${ZABBIX_BASE_URL}/api_jsonrpc.php"
 fi
 
-ensure_saml_idp_configmap
+for endpoint in "${KEYCLOAK_BASE_URL}" "${ZABBIX_API_URL}"; do
+  [[ -z "${endpoint}" || "${endpoint}" == https://* ]] || {
+    echo "[ERROR] O bootstrap exige endpoints HTTPS" >&2; exit 1;
+  }
+done
 
 zbx_call() {
   local method="$1"
   local params="$2"
   local id="${3:-1}"
-  curl -ksS \
+  curl "${CURL_TLS_ARGS[@]}" \
     -H 'Content-Type: application/json-rpc' \
-    -H "Authorization: Bearer ${ZABBIX_TOKEN}" \
-    -d "{\"jsonrpc\":\"2.0\",\"method\":\"${method}\",\"params\":${params},\"id\":${id}}" \
+    --header @<(printf 'Authorization: Bearer %s\n' "${ZABBIX_TOKEN}") \
+    --data-binary @<(printf '%s' "${params}" | jq -c --arg method "${method}" --argjson id "${id}" \
+      '{jsonrpc:"2.0",method:$method,params:.,id:$id}') \
     "${ZABBIX_API_URL}"
 }
 
@@ -208,21 +210,50 @@ zbx_result() {
     printf '%s\n' "${response}" | jq -r '.error | "[ERROR] Zabbix API: \(.message) - \(.data // "")"' >&2
     exit 1
   fi
+  if ! printf '%s' "${response}" | jq -e 'has("result") and .result != null' >/dev/null; then
+    echo "[ERROR] Resposta inválida da API Zabbix para ${method}" >&2; exit 1
+  fi
   printf '%s' "${response}" | jq '.result'
 }
 
-login_response="$(curl -ksS \
+login_response="$(curl "${CURL_TLS_ARGS[@]}" \
   -H 'Content-Type: application/json-rpc' \
-  -d "$(jq -n \
+  --data-binary @<(jq -n \
     --arg user "${ZABBIX_ADMIN_USER}" \
-    --arg pass "${ZABBIX_ADMIN_PASSWORD}" \
-    '{jsonrpc:"2.0",method:"user.login",params:{username:$user,password:$pass},id:1}')" \
+    --rawfile pass <(printf '%s' "${ZABBIX_ADMIN_PASSWORD}") \
+    '{jsonrpc:"2.0",method:"user.login",params:{username:$user,password:$pass},id:1}') \
   "${ZABBIX_API_URL}")"
 
 ZABBIX_TOKEN="$(printf '%s' "${login_response}" | jq -r '.result // empty')"
 if [[ -z "${ZABBIX_TOKEN}" ]]; then
   echo "[ERROR] Não foi possível autenticar no Zabbix API. Defina ZABBIX_ADMIN_PASSWORD no .env." >&2
   exit 1
+fi
+
+# Validar o diretório antes de trocar o certificado de uma instalação existente.
+validate_saml_directory() {
+  local directories directory_count directory_id
+  directories="$(zbx_result userdirectory.get "$(jq -n '{output:"extend",filter:{idp_type:"2"}}')")"
+  directory_count="$(printf '%s' "${directories}" | jq 'length')"
+  if [[ "${directory_count}" -gt 1 ]]; then
+    echo "[ERROR] Mais de um diretório SAML existe; revisar antes de alterar a autenticação" >&2; exit 1
+  fi
+  if [[ "${directory_count}" == 1 ]] && ! printf '%s' "${directories}" \
+    | jq -e --arg entity "${KEYCLOAK_BASE_URL%/}/realms/${KEYCLOAK_REALM}" '.[0].idp_entityid == $entity' >/dev/null; then
+    echo "[ERROR] O diretório SAML existente pertence a outro IdP" >&2; exit 1
+  fi
+  directory_id="$(printf '%s' "${directories}" | jq -r '.[0].userdirectoryid // empty')"
+  SAML_DIRECTORY_ID="${directory_id}"
+}
+
+cleanup_session() {
+  zbx_call user.logout '[]' >/dev/null 2>&1 || true
+  unset ZABBIX_TOKEN ZABBIX_ADMIN_PASSWORD
+}
+trap cleanup_session EXIT
+if [[ "${ZABBIX_ENABLE_SAML}" == "true" ]]; then
+  validate_saml_directory
+  ensure_saml_idp_configmap
 fi
 
 existing_secret_key() {
@@ -314,7 +345,7 @@ ensure_user() {
     --arg roleid "${roleid}" \
     --arg usrgrpid "${usrgrpid}" \
     --arg userid "${userid}" \
-    --arg password "${password}" \
+    --rawfile password <(printf '%s' "${password}") \
     '{username:$username,name:$first_name,surname:$last_name,roleid:$roleid,usrgrps:[{usrgrpid:$usrgrpid}]}
      + (if $userid != "" then {userid:$userid} else {} end)
      + (if $password != "" then {passwd:$password} else {} end)')"
@@ -353,16 +384,16 @@ ensure_grafana_datasource_identity() {
   "${OC_BIN}" create namespace "${GRAFANA_NAMESPACE}" --dry-run=client -o yaml | "${OC_BIN}" apply --server-side -f - >/dev/null
   "${OC_BIN}" -n "${GRAFANA_NAMESPACE}" create secret generic "${ZABBIX_GRAFANA_SECRET}" \
     --from-literal=username="${ZABBIX_GRAFANA_USER}" \
-    --from-literal=password="${ZABBIX_GRAFANA_PASSWORD}" \
+    --from-file=password=<(printf '%s' "${ZABBIX_GRAFANA_PASSWORD}") \
     --dry-run=client -o yaml | "${OC_BIN}" apply --server-side -f - >/dev/null
   "${OC_BIN}" -n "${GRAFANA_NAMESPACE}" annotate secret "${ZABBIX_GRAFANA_SECRET}" \
     kubectl.kubernetes.io/last-applied-configuration- >/dev/null 2>&1 || true
 }
 
 ensure_saml() {
-  local directory_id admin_group admin_role reader_group reader_role disabled_group provision_groups jit_enabled scim_enabled
+  local directory_id directories directory_count admin_group admin_role reader_group reader_role disabled_group provision_groups jit_enabled scim_enabled
 
-  directory_id="$(zbx_result userdirectory.get "$(jq -n '{output:"extend",filter:{idp_type:"2"}}')" | jq -r '.[0].userdirectoryid // empty')"
+  directory_id="${SAML_DIRECTORY_ID}"
   admin_group="$(user_group_id_by_name "Zabbix administrators")"
   admin_role="$(role_id_by_name "Super admin role")"
   reader_group="$(ensure_user_group "${ZABBIX_GRAFANA_USER_GROUP}")"

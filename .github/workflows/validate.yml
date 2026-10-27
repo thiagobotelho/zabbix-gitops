@@ -24,3 +24,7 @@ jobs:
           python3 -m venv /tmp/crd-schema-venv
           /tmp/crd-schema-venv/bin/pip install PyYAML==6.0.3 jsonschema==4.26.0
           /tmp/crd-schema-venv/bin/python tests/validate-crds.py
+      - name: Validar bootstrap SAML com APIs sintéticas
+        run: |
+          bash -n scripts/bootstrap-zabbix.sh
+          python3 tests/test-saml-bootstrap.py
