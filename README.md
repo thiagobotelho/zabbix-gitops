@@ -35,13 +35,50 @@ oc apply -k overlays/desenvolvimento
 
 ## Bootstrap SAML e integração Grafana
 
-Após a stack subir, execute o bootstrap idempotente:
+Após a stack subir, use o mesmo script para obter o certificado público e
+cadastrar o IdP/JIT. Não é necessário copiar o certificado nem preencher o IdP
+na interface. Dependências locais: Bash, oc, curl, jq, openssl, base64 e Python 3
+(biblioteca padrão para interpretar XML). O Python fica no código versionado,
+sem comandos de instalação ou scripts embutidos no tutorial.
+
+Exemplo de execução **somente SAML**, a partir de Bash ou Zsh:
 
 ```bash
-cp .env.example .env
-# defina ZABBIX_ADMIN_PASSWORD com a senha administrativa atual do Zabbix
-scripts/bootstrap-zabbix.sh
+printf '%s' 'Senha atual do administrador local Admin do Zabbix: '
+IFS= read -r -s ZABBIX_ADMIN_PASSWORD
+printf '\n'
+test -n "$ZABBIX_ADMIN_PASSWORD"
 ```
+
+Se o teste passou, configure o escopo e execute:
+
+```bash
+export ZABBIX_ADMIN_PASSWORD
+export BOOTSTRAP_CA_FILE=/caminho/para/ingress-ca.crt
+export ZABBIX_MANAGE_GRAFANA_DATASOURCE=false
+export ZABBIX_ENABLE_SAML_SCIM=false
+bash scripts/bootstrap-zabbix.sh
+```
+
+O arquivo indicado é a **CA pública HTTPS** das Routes, diferente do certificado
+de assinatura SAML que o script consulta automaticamente. Com certificados
+confiáveis pelo sistema, a variável pode ser omitida. O script exige HTTPS
+validado e não usa `curl -k`. Usa a senha atual do administrador **local do
+Zabbix**, não a senha de `zabbix-admin` no Keycloak nem a senha do banco.
+
+Após sucesso:
+
+```bash
+unset ZABBIX_ADMIN_PASSWORD BOOTSTRAP_CA_FILE
+unset ZABBIX_MANAGE_GRAFANA_DATASOURCE ZABBIX_ENABLE_SAML_SCIM
+```
+
+Não grave senhas no Git nem execute com `set -x`. O arquivo `.env` é opcional;
+variáveis já fornecidas no ambiente prevalecem sobre ele. Caso utilize `.env`,
+mantenha-o privado e fora do Git. O modo acima não altera a conta técnica ou o
+Secret do Grafana. A integração opcional do datasource exige revisão própria;
+sua opção padrão no script continua `true` para compatibilidade com o fluxo
+completo existente.
 
 O script faz:
 
@@ -148,9 +185,8 @@ conservadoras: o Zabbix valida assertions assinadas pelo IdP, mas não exige
 criptografia nem assinatura de AuthN/logout requests enquanto não houver
 certificado/chave de SP provisionados no frontend.
 
-SCIM é habilitado no diretório SAML para ambientes que publicarem o endpoint e
-um cliente SCIM compatível. No laboratório CRC, o caminho principal continua
-sendo JIT no login; SCIM fica preparado para evolução sem armazenar token no Git.
+SCIM permanece desabilitado por padrão. Habilite somente com endpoint e cliente
+SCIM configurados; JIT no login não comprova funcionamento de SCIM.
 
 ## Datasource Grafana
 
@@ -202,3 +238,31 @@ Referências:
 ## Aprender a configuração
 
 Consulte o [guia comentado](docs/APRENDIZADO.md) para entender componentes, escolhas, testes positivos/negativos e reversão.
+
+## Seleção e rotação do certificado SAML
+
+O helper `scripts/extract-saml-signing-cert.py` interpreta namespaces XML e
+seleciona somente certificados em `IDPSSODescriptor/KeyDescriptor use="signing"`.
+Confere o EntityID do realm, formato X.509, expiração e chave RSA. Entradas de
+criptografia são ignoradas. O transporte HTTPS valida a origem do metadata;
+o helper não verifica uma assinatura XML do documento.
+
+Com múltiplos certificados de assinatura distintos, o script interrompe antes
+de atualizar o ConfigMap. Durante rotação, confira a chave ativa no Keycloak e
+informe sua impressão digital SHA-256 em `KEYCLOAK_SAML_CERT_SHA256`. A impressão
+digital precisa corresponder a um certificado publicado como assinatura; não
+há seleção automática pelo último elemento ou pela data de expiração.
+
+O bootstrap autentica e verifica o diretório existente antes de publicar o
+certificado. Outro EntityID ou múltiplos diretórios exigem revisão. Ao mudar o
+certificado, atualiza o ConfigMap e aguarda o rollout do frontend; as sessões
+podem ser interrompidas. Não há transação única entre Kubernetes e a API Zabbix:
+se uma etapa posterior falhar, investigue e reexecute depois de corrigir a causa.
+A reexecução reaproveita o diretório existente do mesmo IdP e não reinicia o
+frontend quando o certificado não mudou. Reconciliar o diretório pode substituir
+mapeamentos personalizados: revise a política antes da execução.
+
+Os cenários sintéticos estão em `tests/test-saml-bootstrap.py`, executados no CI.
+Eles não comprovam login SAML real, permissões Kubernetes, rollout ou JIT em um
+cluster. Após o bootstrap, teste login permitido, papel recebido, logout e usuário
+sem mapeamento. Mantenha um administrador local para recuperação.

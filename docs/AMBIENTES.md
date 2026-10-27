@@ -30,7 +30,7 @@ Bootstrap:
 
 - `ZABBIX_ENABLE_SAML=true` habilita SAML via Keycloak.
 - `ZABBIX_ENABLE_SAML_JIT=true` ativa JIT provisioning.
-- `ZABBIX_ENABLE_SAML_SCIM=true` deixa SCIM habilitado no diretório SAML.
+- `ZABBIX_ENABLE_SAML_SCIM=false` mantém SCIM desabilitado; JIT é independente.
 - `ZABBIX_DISABLED_USER_GROUP` define o grupo desabilitado usado em
   `disabled_usrgrpid`.
 - `ZABBIX_MANAGE_GRAFANA_DATASOURCE=true` cria/atualiza o usuário técnico e o
